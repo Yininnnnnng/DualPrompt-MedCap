@@ -7,7 +7,7 @@ Original file is located at
     https://colab.research.google.com/drive/1BT8z21WO-oS9ZgxQCY4bq-TFBhQfxAj9
 """
 
-#纯fixmatch
+#only fixmatch
 
 import torch
 import torch.nn as nn
@@ -33,7 +33,7 @@ warnings.filterwarnings('ignore')
 from google.colab import drive
 drive.mount('/content/drive')#
 
-# 设置随机种子，确保实验可复现
+
 def set_seed(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -42,7 +42,7 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
 
 def extract_modality(text):
-    """从文本中提取modality信息"""
+    """extract modality from questions or answers"""
     if not isinstance(text, str):
         return None
 
@@ -58,7 +58,7 @@ def extract_modality(text):
             return modality
     return None
 
-# 基础模型 - 纯FixMatch版本
+# baseline-only fixmatch
 class BaseModalityClassifier(nn.Module):
     def __init__(self, num_classes=3):
         super().__init__()
@@ -80,7 +80,7 @@ class BaseModalityClassifier(nn.Module):
         features = self.backbone(x)
         return self.modality_head(features)
 
-# 医学注意力模块
+# MedicalModalityAttention
 class MedicalModalityAttention(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
@@ -105,7 +105,7 @@ class MedicalModalityAttention(nn.Module):
         texture_weight = self.texture_attention(x)
         return x * anatomy_weight * texture_weight
 
-# 注意力模型 - FixMatch+医学注意力版本
+# compaired model-fixmatch +  AttentionModalityClassifier
 class AttentionModalityClassifier(nn.Module):
     def __init__(self, num_classes=3):
         super().__init__()
@@ -144,7 +144,7 @@ class AttentionModalityClassifier(nn.Module):
         features = torch.flatten(x, 1)
         return self.modality_head(features)
 
-# 保持原有的数据增强策略
+
 class MedicalImageAugmentation:
     def __init__(self):
         self.base_aug = transforms.Compose([
@@ -298,7 +298,7 @@ def evaluate(model, val_loader, criterion, device):
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
 
-            # 计算每个模态的准确率
+            
             for i, (pred, label) in enumerate(zip(predicted, labels)):
                 modality = ['mri', 'ct', 'xray'][label.item()]
                 modality_total[modality] += 1
@@ -316,18 +316,18 @@ def evaluate(model, val_loader, criterion, device):
 
     return avg_loss, overall_acc, modality_accuracies
 
-# FixMatch训练函数
+# FixMatch train
 def train_fixmatch(model, train_loader, unlabeled_loader, val_loader, device, model_name):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
 
-    # 创建保存目录
-    save_dir = '/content/drive/MyDrive/PhD/Research1/output'
+    # save
+    save_dir = '/content/drive/MyDrive/output'
     os.makedirs(save_dir, exist_ok=True)
 
     num_epochs = 10
-    threshold = 0.95  # 伪标签置信度阈值
+    threshold = 0.95  # threshold
     best_acc = 0
     history = {
         'train_loss': [], 'train_acc': [],
@@ -362,18 +362,18 @@ def train_fixmatch(model, train_loader, unlabeled_loader, val_loader, device, mo
 
             optimizer.zero_grad()
 
-            # 有标签数据的监督损失
+            # labeledloss
             outputs = model(inputs)
             sup_loss = criterion(outputs, labels)
 
-            # 无标签数据的伪标签
+            # unlabeled loss
             with torch.no_grad():
                 pseudo_outputs = model(weak_aug)
                 pseudo_probs = F.softmax(pseudo_outputs, dim=1)
                 max_probs, pseudo_labels = torch.max(pseudo_probs, dim=1)
                 mask = max_probs.ge(threshold)
 
-            # 无标签数据的一致性正则化
+            
             strong_outputs = model(strong_aug)
             unsup_loss = (F.cross_entropy(strong_outputs, pseudo_labels,
                                         reduction='none') * mask).mean()
@@ -386,7 +386,7 @@ def train_fixmatch(model, train_loader, unlabeled_loader, val_loader, device, mo
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
 
-            # 计算每个模态的准确率
+           
             for i, (pred, label) in enumerate(zip(predicted, labels)):
                 modality = ['mri', 'ct', 'xray'][label.item()]
                 modality_total[modality] += 1
@@ -400,7 +400,7 @@ def train_fixmatch(model, train_loader, unlabeled_loader, val_loader, device, mo
                 'Acc': f'{100.*correct/total:.2f}%'
             })
 
-        # 计算训练集上每个模态的准确率
+        
         train_acc = correct / total
         modality_accuracies = {
             modality: modality_correct[modality]/modality_total[modality]
@@ -408,11 +408,11 @@ def train_fixmatch(model, train_loader, unlabeled_loader, val_loader, device, mo
             if modality_total[modality] > 0
         }
 
-        # 验证
+        # val
         val_loss, val_acc, val_modality_acc = evaluate(model, val_loader, criterion, device)
         scheduler.step()
 
-        # 打印当前epoch的结果
+        # print
         print(f'\nEpoch {epoch+1}:')
         print(f'Training Loss: {total_loss/(batch_idx+1):.4f}')
         print(f'Training Accuracy: {100.*train_acc:.2f}%')
@@ -426,14 +426,14 @@ def train_fixmatch(model, train_loader, unlabeled_loader, val_loader, device, mo
         for modality, acc in val_modality_acc.items():
             print(f'{modality.upper()}: {100.*acc:.2f}%')
 
-        # 更新历史记录
+        
         history['train_loss'].append(total_loss/(batch_idx+1))
         history['train_acc'].append(train_acc)
         history['val_loss'].append(val_loss)
         history['val_acc'].append(val_acc)
         history['modality_metrics'].append(val_modality_acc)
 
-        # 保存最佳模型 - 使用绝对路径
+        # save best model
         if val_acc > best_acc:
             best_acc = val_acc
             save_path = os.path.join(save_dir, f'{model_name}_best.pth')
@@ -449,7 +449,7 @@ def train_fixmatch(model, train_loader, unlabeled_loader, val_loader, device, mo
     return history
 
 def plot_training_history(base_history, attention_history):
-    # 绘制总体准确率对比
+    
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
     plt.plot(base_history['train_acc'], label='Base Train')
@@ -461,7 +461,7 @@ def plot_training_history(base_history, attention_history):
     plt.ylabel('Accuracy')
     plt.legend()
 
-    # 绘制损失对比
+    
     plt.subplot(1, 2, 2)
     plt.plot(base_history['train_loss'], label='Base Train')
     plt.plot(base_history['val_loss'], label='Base Val')
@@ -480,26 +480,26 @@ def run_ablation_study():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # 加载数据
+    
     print("\nLoading RAD dataset...")
-    train_path = '/content/drive/MyDrive/PhD/Research1/RADdataset/train-00000-of-00001-eb8844602202be60.parquet'
-    test_path = '/content/drive/MyDrive/PhD/Research1/RADdataset/test-00000-of-00001-e5bc3d208bb4deeb.parquet'
+    train_path = '/content/drive/MyDrive/RADdataset/train-00000-of-00001-eb8844602202be60.parquet'
+    test_path = '/content/drive/MyDrive/RADdataset/test-00000-of-00001-e5bc3d208bb4deeb.parquet'
 
     train_df = pd.read_parquet(train_path)
     test_df = pd.read_parquet(test_path)
     combined_df = pd.concat([train_df, test_df], ignore_index=True)
 
-    # 创建数据集
+    
     labeled_dataset = RADDataset(combined_df, is_labeled=True, mode='train')
     unlabeled_dataset = RADDataset(combined_df, is_labeled=False)
     test_dataset = RADDataset(combined_df, is_labeled=True, mode='test')
 
-    # 划分训练集和验证集
+    
     train_size = int(0.8 * len(labeled_dataset))
     val_size = len(labeled_dataset) - train_size
     train_dataset, val_dataset = random_split(labeled_dataset, [train_size, val_size])
 
-    # 创建数据加载器
+   
     batch_size = 8
     train_loader = DataLoader(
         train_dataset,
@@ -525,7 +525,7 @@ def run_ablation_study():
         pin_memory=True
     )
 
-    # 1. 运行纯FixMatch
+    # 1. FixMatch
     print("\n=== Running Pure FixMatch ===")
     base_model = BaseModalityClassifier().to(device)
     base_history = train_fixmatch(
@@ -533,7 +533,7 @@ def run_ablation_study():
         device, "base_fixmatch"
     )
 
-    # 2. 运行FixMatch+医学注意力
+    # 2. FixMatch+ AttentionModalityClassifier
     print("\n=== Running FixMatch + Medical Attention ===")
     attention_model = AttentionModalityClassifier().to(device)
     attention_history = train_fixmatch(
@@ -541,10 +541,10 @@ def run_ablation_study():
         device, "attention_fixmatch"
     )
 
-    # 绘制结果对比
+    
     plot_training_history(base_history, attention_history)
 
-    # 打印最终结果
+    
     print("\n=== Final Results ===")
     print("Pure FixMatch:")
     print(f"Best Validation Accuracy: {100.*max(base_history['val_acc']):.2f}%")
@@ -556,7 +556,7 @@ if __name__ == "__main__":
 
 
 
-#测试slake用上面的半监督模型:
+#====================test slake=====================:
 
 import torch
 import torch.nn as nn
@@ -575,7 +575,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix, classification_report
 
-# 重新定义模型结构以便加载参数
+
 class BaseModalityClassifier(nn.Module):
     def __init__(self, num_classes=3):
         super().__init__()
@@ -597,7 +597,7 @@ class BaseModalityClassifier(nn.Module):
         features = self.backbone(x)
         return self.modality_head(features)
 
-# 医学注意力模块
+
 class MedicalModalityAttention(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
@@ -622,7 +622,7 @@ class MedicalModalityAttention(nn.Module):
         texture_weight = self.texture_attention(x)
         return x * anatomy_weight * texture_weight
 
-# 注意力模型
+
 class AttentionModalityClassifier(nn.Module):
     def __init__(self, num_classes=3):
         super().__init__()
@@ -666,23 +666,23 @@ class SLAKEDataset(Dataset):
         with open(json_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
 
-        # 仅保留英文问题
+        
         self.samples = [item for item in self.data if item['q_lang'] == 'en']
 
         self.base_dir = base_dir
         self.modality_to_idx = {'MRI': 0, 'CT': 1, 'X-ray': 2, 'Xray': 2, 'X-Ray': 2, 'XRAY': 2}
 
-        # 检查并统计模态分布
+        
         modality_counts = {}
         for item in self.samples:
             modality = item.get('modality', 'Unknown')
             modality_counts[modality] = modality_counts.get(modality, 0) + 1
 
-        print("模态分布统计:")
+        print("modality distribution:")
         for modality, count in modality_counts.items():
-            print(f"  {modality}: {count}样本")
+            print(f"  {modality}: {count}samples")
 
-        # 标准化预处理
+        
         self.transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
@@ -690,10 +690,10 @@ class SLAKEDataset(Dataset):
                                std=[0.229, 0.224, 0.225])
         ])
 
-        print(f"总共加载了 {len(self.samples)} 个英文测试样本")
+        print(f"upload {len(self.samples)} english samples")
 
-        # 设置图像目录名
-        self.img_dir_name = 'imgs'  # 基于你提供的信息
+        
+        self.img_dir_name = 'imgs'  
 
     def __len__(self):
         return len(self.samples)
@@ -701,35 +701,35 @@ class SLAKEDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
 
-        # 加载图像
+        
         img_path = os.path.join(self.base_dir, self.img_dir_name, sample['img_name'])
 
         try:
             image = Image.open(img_path).convert('RGB')
             image_tensor = self.transform(image)
 
-            # 获取标签 - 使用每个样本的modality字段作为真实标签
+            
             modality = sample.get('modality', None)
 
-            # 标准化模态名称
+            
             if modality:
                 if modality.upper() in ['XRAY', 'X-RAY', 'X RAY']:
                     modality = 'X-ray'
                 elif modality.upper() == 'MR':
                     modality = 'MRI'
 
-            # 检查是否在已知模态中
+            
             if modality in self.modality_to_idx:
                 label = self.modality_to_idx[modality]
             else:
-                # 未知模态或无模态信息
+                
                 label = -1
 
             return image_tensor, label, sample['img_id']
 
         except Exception as e:
-            print(f"加载图像错误 {img_path}: {e}")
-            # 返回一个空白图像和无效标签
+            print(f"wrongly upload {img_path}: {e}")
+            
             dummy_image = torch.zeros(3, 224, 224)
             return dummy_image, -1, sample['img_id']
 
@@ -741,25 +741,25 @@ def test_model(model, test_loader, device, model_name):
     correct = 0
     total = 0
 
-    # 用于记录每个模态的准确度
+    
     modality_correct = {'MRI': 0, 'CT': 0, 'X-ray': 0}
     modality_total = {'MRI': 0, 'CT': 0, 'X-ray': 0}
     idx_to_modality = {0: 'MRI', 1: 'CT', 2: 'X-ray'}
 
     with torch.no_grad():
         for inputs, labels, img_ids in tqdm(test_loader, desc=f'Testing {model_name}'):
-            # 将img_ids保持在CPU上
+            
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            # 在CPU上创建掩码
+            
             valid_mask = (labels >= 0).cpu()
 
-            # 筛选有效标签的样本
+            
             if not valid_mask.any():
                 continue
 
-            # 在移动到设备前应用掩码
+            
             valid_inputs = inputs[valid_mask].to(device)
             valid_labels = labels[valid_mask].to(device)
             valid_img_ids = img_ids[valid_mask]  # img_ids保持在CPU上
@@ -771,35 +771,35 @@ def test_model(model, test_loader, device, model_name):
             outputs = model(valid_inputs)
             _, predicted = outputs.max(1)
 
-            # 记录预测结果
+            
             all_preds.extend(predicted.cpu().numpy())
             all_labels.extend(valid_labels.cpu().numpy())
             all_img_ids.extend(valid_img_ids.cpu().numpy())
 
-            # 计算总体准确率
+            
             total += valid_labels.size(0)
             correct += predicted.eq(valid_labels).sum().item()
 
-            # 计算每个模态的准确率
+            
             for i, (pred, label) in enumerate(zip(predicted, valid_labels)):
                 modality = idx_to_modality[label.item()]
                 modality_total[modality] += 1
                 if pred == label:
                     modality_correct[modality] += 1
 
-    # 计算总体准确率
+    
     overall_acc = correct / total if total > 0 else 0
-    print(f'\n{model_name} 测试结果:')
-    print(f'总体准确率: {100.*overall_acc:.2f}%')
+    print(f'\n{model_name} test results:')
+    print(f'total acc: {100.*overall_acc:.2f}%')
 
-    # 计算并打印每个模态的准确率
-    print('各模态准确率:')
+    
+    print('modality acc:')
     for modality in modality_total.keys():
         if modality_total[modality] > 0:
             acc = modality_correct[modality] / modality_total[modality]
             print(f'{modality}: {100.*acc:.2f}% ({modality_correct[modality]}/{modality_total[modality]})')
 
-    # 生成混淆矩阵
+    # confused matrixed
     if len(all_labels) > 0:
         cm = confusion_matrix(all_labels, all_preds)
         plt.figure(figsize=(10, 8))
@@ -812,14 +812,14 @@ def test_model(model, test_loader, device, model_name):
         plt.savefig(f'/content/drive/MyDrive/PhD/Research1/output/{model_name}_confusion_matrix.png')
         plt.show()
 
-        # 生成详细的分类报告
+        
         report = classification_report(all_labels, all_preds,
                                       target_names=['MRI', 'CT', 'X-ray'],
                                       digits=4)
-        print("\n分类报告:")
+        print("\nclassification report:")
         print(report)
 
-        # 保存错误预测的图像ID
+        
         error_indices = [i for i in range(len(all_preds)) if all_preds[i] != all_labels[i]]
         error_img_ids = [all_img_ids[i] for i in error_indices]
         error_true = [idx_to_modality[all_labels[i]] for i in error_indices]
@@ -831,34 +831,34 @@ def test_model(model, test_loader, device, model_name):
             'pred_modality': error_pred
         })
 
-        print(f"\n错误预测样本数: {len(error_indices)}")
+        print(f"\nwrong: {len(error_indices)}")
         if len(error_indices) > 0:
-            print("错误预测样本示例:")
+            print("wrong sample:")
             print(error_df.head(10))
-            error_df.to_csv(f'/content/drive/MyDrive/PhD/Research1/output/{model_name}_errors.csv', index=False)
+            error_df.to_csv(f'/content/drive/MyDrive/output/{model_name}_errors.csv', index=False)
 
     return overall_acc, {modality: modality_correct[modality]/modality_total[modality]
                         if modality_total[modality] > 0 else 0
                         for modality in modality_total.keys()}
 
 def main():
-    # 设置设备
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"使用设备: {device}")
+    print(f"device: {device}")
 
-    # 定义数据路径
-    slake_base_dir = '/content/drive/MyDrive/PhD/Research1/slakedataset/Slake1.0'
+    
+    slake_base_dir = '/content/drive/MyDrive/slakedataset/Slake1.0'
     json_path = os.path.join(slake_base_dir, 'test.json')
 
-    # 打印测试文件路径以确认
-    print(f"测试JSON文件路径: {json_path}")
-    print(f"检查文件是否存在: {os.path.exists(json_path)}")
+    
+    print(f"json: {json_path}")
+    print(f"exsit: {os.path.exists(json_path)}")
 
-    # 模型保存路径
-    base_model_path = '/content/drive/MyDrive/PhD/Research1/output/base_fixmatch_best.pth'
-    attention_model_path = '/content/drive/MyDrive/PhD/Research1/output/attention_fixmatch_best.pth'
+    
+    base_model_path = '/content/drive/MyDrive/output/base_fixmatch_best.pth'
+    attention_model_path = '/content/drive/MyDrive/output/attention_fixmatch_best.pth'
 
-    # 创建数据集和数据加载器
+    
     test_dataset = SLAKEDataset(json_path, slake_base_dir)
     test_loader = DataLoader(
         test_dataset,
@@ -868,81 +868,81 @@ def main():
         pin_memory=True
     )
 
-    # 验证数据集是否加载成功
+    
     if len(test_dataset) == 0:
-        print("警告: 测试数据集为空，请检查数据路径和过滤条件")
+        print("warning: double check if empty")
         return
 
     results = {}
 
-    # 测试基础模型
+    
     if os.path.exists(base_model_path):
-        print(f"\n加载基础模型: {base_model_path}")
+        print(f"\nupload: {base_model_path}")
         base_model = BaseModalityClassifier().to(device)
         checkpoint = torch.load(base_model_path, map_location=device)
         base_model.load_state_dict(checkpoint['model_state_dict'])
-        base_acc, base_modality_acc = test_model(base_model, test_loader, device, "基础模型(Base)")
-        results['基础模型'] = {'总体准确率': base_acc, '模态准确率': base_modality_acc}
+        base_acc, base_modality_acc = test_model(base_model, test_loader, device, "Base")
+        results['base'] = {'total acc': base_acc, 'modality acc': base_modality_acc}
     else:
-        print(f"找不到基础模型: {base_model_path}")
+        print(f"cannot find base modal: {base_model_path}")
 
-    # 测试注意力模型
+    
     if os.path.exists(attention_model_path):
-        print(f"\n加载注意力模型: {attention_model_path}")
+        print(f"\nupload attention model: {attention_model_path}")
         attention_model = AttentionModalityClassifier().to(device)
         checkpoint = torch.load(attention_model_path, map_location=device)
         attention_model.load_state_dict(checkpoint['model_state_dict'])
-        attention_acc, attention_modality_acc = test_model(attention_model, test_loader, device, "注意力模型(Attention)")
-        results['注意力模型'] = {'总体准确率': attention_acc, '模态准确率': attention_modality_acc}
+        attention_acc, attention_modality_acc = test_model(attention_model, test_loader, device, "Attention")
+        results['attention model'] = {'total acc': attention_acc, 'modality acc': attention_modality_acc}
     else:
-        print(f"找不到注意力模型: {attention_model_path}")
+        print(f"cannot find attention model: {attention_model_path}")
 
-    # 总结结果
+    # results
     if results:
-        print("\n=== 模型对比总结 ===")
+        print("\n=== comparison ===")
         for model_name, metrics in results.items():
             print(f"\n{model_name}:")
-            print(f"总体准确率: {100.*metrics['总体准确率']:.2f}%")
-            print("各模态准确率:")
-            for modality, acc in metrics['模态准确率'].items():
+            print(f"total acc: {100.*metrics['total acc']:.2f}%")
+            print("modality acc:")
+            for modality, acc in metrics['modality acc'].items():
                 print(f"  {modality}: {100.*acc:.2f}%")
 
         # 可视化对比
         if len(results) > 1:
-            modalities = list(next(iter(results.values()))['模态准确率'].keys())
+            modalities = list(next(iter(results.values()))['modality acc'].keys())
             model_names = list(results.keys())
 
             # 准备数据
-            overall_accs = [results[model]['总体准确率'] * 100 for model in model_names]
-            modality_accs = {modality: [results[model]['模态准确率'][modality] * 100
+            overall_accs = [results[model]['total acc'] * 100 for model in model_names]
+            modality_accs = {modality: [results[model]['modality acc'][modality] * 100
                                       for model in model_names]
                            for modality in modalities}
 
-            # 绘制对比图
+            
             fig, ax = plt.subplots(figsize=(12, 8))
             bar_width = 0.15
             index = np.arange(len(modalities) + 1)  # +1 for overall
 
-            # 添加总体准确率
+            
             for i, model_name in enumerate(model_names):
                 offset = (i - len(model_names)/2 + 0.5) * bar_width
                 ax.bar(index[0] + offset, overall_accs[i], bar_width,
                      label=model_name)
 
-            # 添加各模态准确率
+            
             for i, modality in enumerate(modalities):
                 for j, model_name in enumerate(model_names):
                     offset = (j - len(model_names)/2 + 0.5) * bar_width
                     ax.bar(index[i+1] + offset, modality_accs[modality][j],
                          bar_width)
 
-            ax.set_ylabel('准确率 (%)')
-            ax.set_title('模型在SLAKE数据集上的模态分类性能对比')
+            ax.set_ylabel('acc (%)')
+            ax.set_title('comparsion on slake datasets')
             ax.set_xticks(index)
-            ax.set_xticklabels(['总体'] + list(modalities))
+            ax.set_xticklabels(['total'] + list(modalities))
             ax.legend()
 
-            plt.savefig('/content/drive/MyDrive/PhD/Research1/output/slake_comparison.png')
+            plt.savefig('/content/drive/MyDrive/output/slake_comparison.png')
             plt.show()
 
 if __name__ == "__main__":
@@ -952,7 +952,7 @@ if __name__ == "__main__":
 
 
 
-#----mri增强
+#===========================================mri augmentation======================================
 
 import torch
 import torch.nn as nn
@@ -968,14 +968,14 @@ from google.colab import drive
 drive.mount('/content/drive')
 
 def find_mri_sample(df):
-    """找到一个明确标注为MRI的样本"""
+    """find a mri sample"""
     for idx, row in df.iterrows():
         if isinstance(row['answer'], str) and 'mri' in row['answer'].lower():
             return row
     return None
 
 def decode_image(image_data):
-    """解码图像数据"""
+    """decode"""
     try:
         if isinstance(image_data, dict):
             if 'bytes' in image_data:
@@ -992,12 +992,12 @@ def decode_image(image_data):
         raise
 
 def process_attention_maps(image, attention_model):
-    """生成注意力图"""
+    """attention figure"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     attention_model = attention_model.to(device)
     attention_model.eval()
 
-    # 转换图像为tensor
+    # tensor
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -1007,7 +1007,7 @@ def process_attention_maps(image, attention_model):
 
     image_tensor = transform(Image.fromarray(image)).unsqueeze(0).to(device)
 
-    # 获取各层注意力图
+    
     attention_maps = []
     with torch.no_grad():
         x = attention_model.backbone.conv1(image_tensor)
@@ -1015,7 +1015,7 @@ def process_attention_maps(image, attention_model):
         x = attention_model.backbone.relu(x)
         x = attention_model.backbone.maxpool(x)
 
-        # 获取每层的注意力图
+        
         attentions = [
             attention_model.attention1,
             attention_model.attention2,
@@ -1030,11 +1030,11 @@ def process_attention_maps(image, attention_model):
             (attention_model.backbone.layer4, attentions[3])
         ]):
             x = layer(x)
-            # 获取解剖结构注意力和纹理注意力
+             
             anatomy_attention = attention.anatomy_attention(x)
             texture_attention = attention.texture_attention(x)
 
-            # 上采样到原始大小
+           
             attention_map = (anatomy_attention * texture_attention).mean(1, keepdim=True) # Keep the channel dimension
             attention_map = nn.functional.interpolate(
                 attention_map, size=(224, 224), mode='bilinear', align_corners=False
@@ -1044,8 +1044,8 @@ def process_attention_maps(image, attention_model):
             return attention_maps
 
 def apply_mri_augmentations(image):
-    """应用MRI特殊增强"""
-    # 基础增强
+    """mri augmentation"""
+   
     base_aug = transforms.Compose([
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomRotation(10),
@@ -1057,7 +1057,7 @@ def apply_mri_augmentations(image):
         transforms.ColorJitter(brightness=0.2, contrast=0.2)
     ])
 
-    # MRI特殊增强
+    
     mri_aug = transforms.Compose([
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomRotation(15),
@@ -1074,7 +1074,7 @@ def apply_mri_augmentations(image):
         )
     ])
 
-    # 应用增强
+    
     pil_image = Image.fromarray(image)
     base_augmented = base_aug(pil_image)
     mri_augmented = mri_aug(pil_image)
@@ -1082,41 +1082,41 @@ def apply_mri_augmentations(image):
     return np.array(base_augmented), np.array(mri_augmented)
 
 def visualize_mri_processing(df, attention_model):
-    """可视化MRI处理步骤"""
-    # 找到MRI样本
+    """visible samples"""
+    
     mri_sample = find_mri_sample(df)
     if mri_sample is None:
         print("No MRI sample found!")
         return
 
-    # 解码并处理图像
+    
     original_image = decode_image(mri_sample['image'])
     if len(original_image.shape) == 2:
         original_image = np.stack([original_image] * 3, axis=-1)
 
-    # 获取注意力图
+   
     attention_maps = process_attention_maps(original_image, attention_model)
 
-    # 应用数据增强
+    
     base_augmented, mri_augmented = apply_mri_augmentations(original_image)
 
-    # 创建可视化
+   
     plt.figure(figsize=(15, 10))
 
-    # 原图
+   
     plt.subplot(3, 3, 1)
     plt.imshow(original_image)
     plt.title('Original MRI Image')
     plt.axis('off')
 
-    # 注意力图
+   
     for i, attention_map in enumerate(attention_maps):
         plt.subplot(3, 3, i + 2)
         plt.imshow(attention_map, cmap='jet')
         plt.title(f'Attention Layer {i+1}')
         plt.axis('off')
 
-    # 数据增强对比
+   
     plt.subplot(3, 3, 7)
     plt.imshow(original_image)
     plt.title('Original')
@@ -1135,25 +1135,25 @@ def visualize_mri_processing(df, attention_model):
     plt.tight_layout()
     plt.show()
 
-    # 打印相关的问题和回答
+   
     print("\nQuestion:", mri_sample['question'])
     print("\nAnswer:", mri_sample['answer'])
 
 def main():
-    # 加载数据集
-    train_path = '/content/drive/MyDrive/PhD/Research1/RADdataset/train-00000-of-00001-eb8844602202be60.parquet'
+    
+    train_path = '/content/drive/MyDrive/RADdataset/train-00000-of-00001-eb8844602202be60.parquet'
     df = pd.read_parquet(train_path)
 
-    # 创建注意力模型
+    
     attention_model = AttentionModalityClassifier()
 
-    # 如果有预训练模型，加载权重
+    
     model_path = 'attention_fixmatch_best.pth'
     if os.path.exists(model_path):
         checkpoint = torch.load(model_path)
         attention_model.load_state_dict(checkpoint['model_state_dict'])
 
-    # 可视化处理步骤
+    
     visualize_mri_processing(df, attention_model)
 
 if __name__ == "__main__":
