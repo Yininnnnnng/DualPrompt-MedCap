@@ -1,138 +1,125 @@
 # DualPrompt-MedCap
 
-**DualPrompt-MedCap** is a dual-prompt enhanced medical image captioning framework that integrates:
+**DualPrompt-MedCap** is a dual-prompt enhanced medical image captioning framework designed and implemented in **Google Colab notebooks**. It integrates:
 
-- 🧠 **Modality-Aware Prompting** via a semi-supervised classifier
-- 🧾 **Question-Guided Clinical Prompting** via semantic understanding
+- 🧠 **Modality-Aware Prompting** via a semi-supervised modality classifier
+- 🧾 **Question-Guided Clinical Prompting** via PubMedBERT-based semantic reasoning
 
-These prompts are injected into the **BLIP-3** backbone for improved clinical relevance and modality alignment. A novel **ground-truth-free evaluation metric** is also provided to assess medical captions without requiring reference reports.
+All components are organized into modular notebooks and designed to be executed inside Colab with **Google Drive mounted**. A novel **ground-truth-free evaluation metric** is also provided.
 
 ---
 
-## 📁 Repository Structure
+## 🗂️ Repository Structure (Notebook-based)
 
 ```
 DualPrompt-MedCap/
-├── modality_classifier/           # Semi-supervised modality classifier (used to produce prompts)
-│   ├── train.py
-│   ├── ablation/                  # Auxiliary experiments to compare base vs attention classifier
-│   └── Pretrain/                  # Save the .pth file here (download link below)
-│
-├── dualprompt_generator/          # BLIP-3 captioning model with injected dual prompts
-│   └── dualprompt_blip3_slake.py
-│
-├── gtfree_eval/                   # Ground-truth-free evaluation metrics for captions
-│   └── evaluate_gtfree.py
-│
-├── baselines/                     # Baseline models for comparison
+├── modality_classifier/
+│   ├── train.ipynb                   # Semi-supervised modality classifier (RAD only)
+│   ├── Pretrain/                     # Place pretrained .pth file here (Google Drive)
+│   └── ablation/
+│       └── ablation_for_semi_supervised_classifier.ipynb
+
+├── dualprompt_generator/
+│   └── dualprompt_blip3_slake.ipynb  # Main captioning module (BLIP-3 + DualPrompt)
+
+├── gtfree_eval/
+│   └── evaluate_gtfree.ipynb         # Ground-truth-free evaluation metrics
+
+├── baselines/
 │   ├── blip2/
-│   │   └── blip2_caption_rad_slake.py
+│   │   └── blip2_caption_rad_slake.ipynb
 │   └── tag2text/
-│       └── tag2text_caption_slake_rad.py
+│       └── tag2text_caption_slake_rad.ipynb
+
+├── README.md
+├── requirements.txt
 ```
 
 ---
 
-## 🔧 Key Components
+## 🚀 Usage Instructions (Colab Workflow)
 
-### 🏷️ Modality Classifier (`modality_classifier/`)
+All notebooks are designed for Google Colab. Follow these steps for each module:
 
-This classifier is trained using FixMatch with a medical attention mechanism to recognize image modality (MRI / CT / X-ray) from the [RAD dataset](https://huggingface.co/datasets/flaviagiammarino/vqa-rad). Its output is used to guide caption generation.
+### 1. Mount Google Drive
 
-```bash
-cd modality_classifier
-python train.py
+Every notebook starts with:
+
+```python
+from google.colab import drive
+drive.mount('/content/drive')
 ```
 
-> 📥 Or download pretrained model:
-
-```bash
-pip install gdown
-gdown https://drive.google.com/uc?id=1--Czotnuvo003XQHik8AVI-cCWiC3exf
-# Place it at: modality_classifier/Pretrain/slake_modality_model_improved.pth
-```
-
-> 🔬 **Ablation**: To compare the base FixMatch vs attention-enhanced classifier, refer to:
-> ```
-> modality_classifier/ablation/
-> ```
-> These experiments are diagnostic only and not part of the captioning pipeline.
+Please ensure your files (data, checkpoints, outputs) are correctly placed under your own Google Drive path.
 
 ---
 
-### 🧠 Caption Generation (`dualprompt_generator/`)
+### 2. Install Dependencies (Inside Notebook)
 
-Injects dual prompts into the BLIP-3 captioning pipeline:  
-- **Modality Prompt** ← from classifier  
-- **Question Prompt** ← via PubMedBERT semantic analysis
+Each notebook begins with appropriate `!pip install` commands. You don't need to install manually via terminal.
 
-```bash
-cd dualprompt_generator
-python dualprompt_blip3_slake.py
-```
-
----
-
-### 📊 Ground-Truth-Free Evaluation (`gtfree_eval/`)
-
-No-reference metric for evaluating medical captions. It assesses:
-- ✅ Clinical completeness
-- ✅ Anatomical structure and logic
-- ✅ Visual and question relevance (via BiomedCLIP)
-
-```bash
-cd gtfree_eval
-python evaluate_gtfree.py
-```
-
----
-
-### 🧪 Baselines (`baselines/`)
-
-Implemented for fair comparison using same datasets and settings:
-
-| Model | Script |
-|-------|--------|
-| BLIP-2 | `baselines/blip2/blip2_caption_rad_slake.py` |
-| Tag2Text | `baselines/tag2text/tag2text_caption_slake_rad.py` |
-
----
-
-## 📦 Installation
-
-Install all dependencies:
+You can optionally use:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Includes:
-- `transformers==4.41.1`
-- `torch==2.2.1`
-- `open_clip_torch`, `einops`, `spacy`, `scispacy`, etc.
+to prepare your Colab or local environment ahead of time.
 
-> For GT-free evaluation, install the large SciSpacy model:
+---
 
-```bash
-python -m spacy download en_core_sci_lg
+### 3. Pretrained Classifier Weights (`.pth`)
+
+The DualPrompt captioning module relies on a pretrained modality classifier. Please download from:
+
+🔗 https://drive.google.com/file/d/1--Czotnuvo003XQHik8AVI-cCWiC3exf/view?usp=sharing
+
+and upload it to your Colab Drive under:
+
 ```
+/content/drive/MyDrive/DualPrompt-MedCap/modality_classifier/Pretrain/slake_modality_model_improved.pth
+```
+
+Make sure the path in `dualprompt_blip3_slake.ipynb` matches your upload location.
+
+---
+
+## 📊 Modules
+
+### 🔹 Modality Classifier
+
+Train or evaluate the semi-supervised modality classifier using `train.ipynb`.  
+Supports ablation between FixMatch baseline and attention-augmented version.
+
+### 🔹 DualPrompt Generation
+
+Run `dualprompt_blip3_slake.ipynb` to generate captions using BLIP-3 with modality + question-guided prompts.
+
+### 🔹 Ground-Truth-Free Evaluation
+
+Evaluate generated captions using `evaluate_gtfree.ipynb`.  
+Assesses medical structure, logic, and image/question relevance—no reference reports required.
+
+### 🔹 Baselines
+
+Compare to:
+- BLIP-2: `blip2_caption_rad_slake.ipynb`
+- Tag2Text: `tag2text_caption_slake_rad.ipynb`
 
 ---
 
 ## 📂 Datasets
 
-| Dataset | Used For | Source |
-|---------|----------|--------|
-| **RAD** | Modality classifier training | [Hugging Face](https://huggingface.co/datasets/flaviagiammarino/vqa-rad) |
-| **SLAKE** | Captioning + evaluation | [Hugging Face](https://huggingface.co/datasets/BoKelvin/SLAKE) |
+| Dataset | Usage | Source |
+|---------|-------|--------|
+| RAD     | Modality classifier only | [Hugging Face](https://huggingface.co/datasets/flaviagiammarino/vqa-rad) |
+| SLAKE   | Caption generation + evaluation | [Hugging Face](https://huggingface.co/datasets/BoKelvin/SLAKE) |
 
-Data loading logic is embedded inside each script.
+Each notebook includes its own data loader and handling logic.
 
 ---
 
 ## 📄 Citation
-
-If you find this work useful, please consider citing us:
 
 ```bibtex
 @inproceedings{zhao2025dualprompt,
@@ -147,4 +134,4 @@ If you find this work useful, please consider citing us:
 
 ## 📬 Contact
 
-For questions or feedback, please open an [issue](https://github.com/Yininnnnnng/DualPrompt-MedCap/issues).
+For questions or issues, please open a [GitHub issue](https://github.com/Yininnnnnng/DualPrompt-MedCap/issues).
