@@ -1,0 +1,22 @@
+# Core Dependencies
+torch==2.2.1
+torchvision==0.17.1
+torchaudio==2.2.1
+numpy==1.26.4
+transformers==4.41.1
+open_clip_torch==2.24.0
+einops
+einops-exts
+
+# Ground-truth-free Evaluation
+spacy
+scispacy
+https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz
+
+# Additional
+matplotlib
+seaborn
+pandas
+scikit-learn
+tqdm
+gdown
