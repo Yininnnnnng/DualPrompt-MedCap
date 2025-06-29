@@ -1,1 +1,556 @@
-# will covered
+# -*- coding: utf-8 -*-
+"""question＋modality prompt with blip3-slake
+
+
+"""
+
+# environment
+!pip uninstall -y transformers numpy torch torchvision torchaudio
+
+
+!pip install numpy==1.26.4
+
+!pip install torch==2.2.1 torchvision==0.17.1 torchaudio==2.2.1 --index-url https://download.pytorch.org/whl/cu121
+!pip install open_clip_torch==2.24.0
+!pip install einops
+!pip install einops-exts
+!pip install transformers==4.41.1
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from transformers import AutoModelForVision2Seq, AutoTokenizer, AutoImageProcessor, AutoModel, StoppingCriteria
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics import classification_report, confusion_matrix
+import numpy as np
+from PIL import Image
+import json
+import os
+from tqdm import tqdm
+from google.colab import drive
+import torchvision.transforms as transforms
+from datetime import datetime
+import torchvision.models as models
+from collections import defaultdict
+import seaborn as sns
+import matplotlib.pyplot as plt
+import traceback
+from typing import Dict, List, Tuple, Optional
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+
+drive.mount('/content/drive')
+
+class EosListStoppingCriteria(StoppingCriteria):
+    def __init__(self, eos_sequence = [32007]):
+        self.eos_sequence = eos_sequence
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
+        last_ids = input_ids[:,-len(self.eos_sequence):].tolist()
+        return self.eos_sequence in last_ids
+
+class MedicalModalityAttention(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.anatomy_attention = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels//2, kernel_size=7, padding=3),
+            nn.BatchNorm2d(in_channels//2),
+            nn.ReLU(),
+            nn.Conv2d(in_channels//2, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+
+        self.texture_attention = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels, in_channels//16, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels//16, in_channels, 1),
+            nn.Sigmoid()
+        )
+
+        self.multi_scale = nn.ModuleList([
+            nn.Conv2d(in_channels, in_channels//4, 3, padding=1, dilation=1),
+            nn.Conv2d(in_channels, in_channels//4, 3, padding=2, dilation=2),
+            nn.Conv2d(in_channels, in_channels//4, 3, padding=4, dilation=4)
+        ])
+
+        self.channel_adjust = nn.Conv2d(in_channels//4*3, in_channels, 1)
+
+    def forward(self, x):
+        anatomy_weight = self.anatomy_attention(x)
+        texture_weight = self.texture_attention(x)
+
+        multi_scale_features = []
+        for conv in self.multi_scale:
+            multi_scale_features.append(conv(x))
+        multi_scale_feat = torch.cat(multi_scale_features, dim=1)
+        multi_scale_feat = self.channel_adjust(multi_scale_feat)
+
+        enhanced = x * anatomy_weight * texture_weight
+        return enhanced + multi_scale_feat
+
+class ModalityClassifier(nn.Module):
+    def __init__(self, num_classes=3):
+        super().__init__()
+        self.backbone = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+
+
+        self.attention1 = MedicalModalityAttention(256)
+        self.attention2 = MedicalModalityAttention(512)
+        self.attention3 = MedicalModalityAttention(1024)
+        self.attention4 = MedicalModalityAttention(2048)
+
+
+        in_features = self.backbone.fc.in_features
+        self.modality_head = nn.Sequential(
+            nn.Linear(in_features, 1024),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.4),
+            nn.Linear(1024, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.4),
+            nn.Linear(512, num_classes)
+        )
+
+    def forward(self, x):
+        x = self.backbone.conv1(x)
+        x = self.backbone.bn1(x)
+        x = self.backbone.relu(x)
+        x = self.backbone.maxpool(x)
+
+        x = self.attention1(self.backbone.layer1(x))
+        x = self.attention2(self.backbone.layer2(x))
+        x = self.attention3(self.backbone.layer3(x))
+        x = self.attention4(self.backbone.layer4(x))
+
+        x = self.backbone.avgpool(x)
+        features = torch.flatten(x, 1)
+        x = self.modality_head(features)
+
+        return x
+
+class EnhancedQuestionAnalyzer:
+    def __init__(self, question_model, question_tokenizer):
+        self.pubmed_bert = question_model
+        self.tokenizer = question_tokenizer
+
+        self.medical_concepts = {
+            'anatomy': ["lung", "heart", "liver", "brain", "chest", "spine"],
+            'pathology': ["tumor", "nodule", "mass", "lesion", "cancer", "abnormal"],
+            'location': ["upper", "lower", "left", "right", "central"],
+            'comparison': ["larger", "smaller", "normal size", "biggest"]
+        }
+
+        self.concept_embeddings = self._initialize_concept_embeddings()
+
+    def _initialize_concept_embeddings(self):
+        concept_embeddings = {}
+        for concept_type, terms in self.medical_concepts.items():
+
+            term_encodings = self.tokenizer(
+                terms,
+                padding=True,
+                truncation=True,
+                return_tensors="pt"
+            ).to(device)
+
+            with torch.no_grad():
+
+                try:
+                    outputs = self.pubmed_bert(**term_encodings)
+                except Exception as e:
+                    print(f"Using fallback API for PubMedBERT: {e}")
+                    outputs = self.pubmed_bert(term_encodings.input_ids,
+                                               attention_mask=term_encodings.attention_mask)
+
+                embeddings = outputs.last_hidden_state[:, 0, :]  # [num_terms, hidden_size]
+                concept_embeddings[concept_type] = embeddings
+
+        return concept_embeddings
+
+    def analyze_question_type(self, question: str) -> Dict[str, float]:
+
+        inputs = self.tokenizer(
+            question,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=128
+        ).to(device)
+
+        with torch.no_grad():
+
+            try:
+                outputs = self.pubmed_bert(**inputs)
+            except Exception as e:
+                print(f"Using fallback API for PubMedBERT: {e}")
+                outputs = self.pubmed_bert(inputs.input_ids,
+                                           attention_mask=inputs.attention_mask)
+
+            question_embedding = outputs.last_hidden_state[:, 0, :]  # [1, hidden_size]
+
+
+        concept_scores = {}
+        for concept_type, concept_emb in self.concept_embeddings.items():
+            similarities = torch.cosine_similarity(
+                question_embedding.unsqueeze(1),  # [1, 1, hidden_size]
+                concept_emb,                      # [num_terms, hidden_size]
+                dim=2
+            )
+            concept_scores[concept_type] = similarities.mean().item()
+
+        return concept_scores
+
+    def get_question_focus(self, question: str) -> str:
+        concept_scores = self.analyze_question_type(question)
+        primary_focus = max(concept_scores.items(), key=lambda x: x[1])[0]
+
+        focus_templates = {
+            'anatomy': 'examine anatomical structures and their relationships',
+            'pathology': 'detect any pathological changes or abnormalities',
+            'location': 'focus on spatial relationships and positioning',
+            'comparison': 'compare sizes and relative appearances'
+        }
+
+        base_focus = focus_templates[primary_focus]
+
+
+        relevant_concepts = [k for k, v in concept_scores.items()
+                            if v > 0.5 and k != primary_focus]
+        if relevant_concepts:
+            additional_focuses = [focus_templates[c] for c in relevant_concepts]
+            base_focus += f", particularly {', '.join(additional_focuses)}"
+
+        return base_focus
+
+class EnhancedEvaluator:
+    def __init__(self):
+        self.reset_stats()
+
+    def reset_stats(self):
+        """restart"""
+        self.stats = {
+            'total_samples': 0,
+            'correct_predictions': 0,
+            'confusion_matrix': defaultdict(lambda: defaultdict(int)),
+            'modality_errors': [],
+            'per_modality_stats': defaultdict(lambda: {'total': 0, 'correct': 0}),
+            'confidence_distribution': {
+                'high': {'count': 0, 'correct': 0},  # >= 0.8
+                'low': {'count': 0, 'correct': 0}    # < 0.8
+            }
+        }
+
+    def update(self, true_modality: str, predicted_modality: str,
+               confidence: float, img_name: str, caption: str = None):
+        """restart"""
+        true_mod = true_modality.upper()
+        pred_mod = predicted_modality.upper()
+
+
+        self.stats['total_samples'] += 1
+        self.stats['confusion_matrix'][true_mod][pred_mod] += 1
+        self.stats['per_modality_stats'][true_mod]['total'] += 1
+
+
+        conf_category = 'high' if confidence >= 0.8 else 'low'
+        self.stats['confidence_distribution'][conf_category]['count'] += 1
+
+
+        if true_mod == pred_mod:
+            self.stats['correct_predictions'] += 1
+            self.stats['per_modality_stats'][true_mod]['correct'] += 1
+            self.stats['confidence_distribution'][conf_category]['correct'] += 1
+        else:
+            self.stats['modality_errors'].append({
+                'image_name': img_name,
+                'true_modality': true_mod,
+                'predicted_modality': pred_mod,
+                'confidence': confidence,
+                'caption': caption
+            })
+
+    def print_evaluation_results(self):
+        """print"""
+        print("\n=== Modality Classification Quick Check ===")
+
+
+        acc = self.stats['correct_predictions'] / self.stats['total_samples']
+        print(f"Overall Accuracy: {acc:.2%}")
+
+
+        print("\nPer Modality Accuracy:")
+        for modality, stats in self.stats['per_modality_stats'].items():
+            acc = stats['correct'] / stats['total'] if stats['total'] > 0 else 0
+            print(f"{modality}: {acc:.2%} ({stats['correct']}/{stats['total']})")
+
+
+        print("\nAttention Required:")
+        for modality, stats in self.stats['per_modality_stats'].items():
+            acc = stats['correct'] / stats['total'] if stats['total'] > 0 else 0
+            if acc < 0.8:
+                print(f"- {modality} needs improvement: {acc:.2%}")
+
+def apply_prompt_template(question: str, clinical_focus: str, modality_info: str) -> str:
+    return f"""
+    <|system|>
+    You are a radiologist examining this {modality_info} image. Question: {question}
+    Describe thoroughly: {clinical_focus}.
+    First describe any abnormal density patterns or structural variations, then detail normal findings if present.
+    <|end|>
+
+    <|user|>
+    <image>
+    Describe all findings systematically.
+    <|end|>
+
+    <|assistant|>
+    """
+
+def generate_enhanced_caption(image, item):
+    """enhaced"""
+    try:
+        # 1. Modality
+        transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+
+        img_tensor = transform(image).unsqueeze(0).to(device)
+        with torch.no_grad():
+            outputs = modality_classifier(img_tensor)
+            probs = F.softmax(outputs, dim=1)
+            confidence, pred_idx = probs.max(1)
+            predicted_modality = ['MRI', 'CT', 'X-ray'][pred_idx.item()]
+
+        # 2.  based confidence with modality
+        modality_info = f"likely a {predicted_modality}" if confidence < 0.8 else f"a {predicted_modality}"
+
+        # 3. question_analyzer with focus
+        clinical_focus = question_analyzer.get_question_focus(item['question'])
+
+        # 4. prompt
+        prompt = apply_prompt_template(
+            question=item['question'],
+            modality_info=modality_info,
+            clinical_focus=clinical_focus
+        )
+
+        # 5. input modality
+        inputs = image_processor(
+            [image],
+            return_tensors="pt",
+            image_aspect_ratio='anyres'
+        ).to(device)
+
+        language_inputs = tokenizer(
+            [prompt],
+            return_tensors="pt"
+        ).to(device)
+
+        inputs.update(language_inputs)
+
+        # 6. generate caption
+        with torch.no_grad():
+            generated_ids = model.generate(
+                **inputs,
+                image_size=[image.size],
+                do_sample=True,
+                max_new_tokens=150,
+                num_beams=5,
+                temperature=0.7,
+                top_p=0.9,
+                pad_token_id=tokenizer.pad_token_id,
+                stopping_criteria=[EosListStoppingCriteria()],
+            )
+
+
+        caption = tokenizer.decode(
+            generated_ids[0],
+            skip_special_tokens=True
+        ).split("<|end|>")[0].strip()
+
+
+        if confidence < 0.8:
+            words = caption.split()
+            certainty_words = ["shows", "demonstrates", "reveals", "indicates", "confirms"]
+            for i, word in enumerate(words):
+                if word.lower() in certainty_words:
+                    words[i] = "may " + word
+                    break
+            caption = " ".join(words)
+
+        # 8. evaluator
+        sample_evaluator = EnhancedEvaluator()
+        sample_evaluator.update(
+            item['modality'],
+            predicted_modality,
+            confidence.item(),
+            item['img_name'],
+            caption
+        )
+
+
+        return caption, predicted_modality, confidence.item(), prompt, sample_evaluator
+
+    except Exception as e:
+        print(f"Error in generate_enhanced_caption for image {item.get('img_name', 'unknown')}: {str(e)}")
+        print("Full traceback:")
+        print(traceback.format_exc())
+        return "", "unknown", 0.0, "", EnhancedEvaluator()
+
+def generate_train_set_captions():
+    """formal generation"""
+    print(f"\nDebug - Using device: {device}")
+
+    # path
+    slake_path = "/content/drive/MyDrive/slakedataset/Slake1.0"
+    output_file = '/content/drive/MyDrive/output/enhanced_captions_train.json'
+
+    # test.json - train.json
+    print("\nLoading training data...")
+    try:
+        with open(os.path.join(slake_path, 'train.json'), 'r') as f:
+            train_data = json.load(f)
+    except Exception as e:
+        print(f"Error loading training data: {str(e)}")
+        return None, None
+
+    # english
+    english_data = [item for item in train_data if item['q_lang'] == 'en']
+    print(f"\nTesting on {len(english_data)} English samples from training set")
+
+
+    evaluator = EnhancedEvaluator()
+    results = []
+
+
+    for idx, item in enumerate(tqdm(english_data, desc="Processing training samples",
+                                  total=len(english_data))):
+        try:
+
+            img_path = os.path.join(slake_path, 'imgs', item['img_name'])
+            image = Image.open(img_path).convert('RGB')
+
+
+            caption, predicted_modality, confidence, enhanced_prompt, sample_evaluator = generate_enhanced_caption(
+                image, item
+            )
+
+
+            evaluator.update(
+                item['modality'],
+                predicted_modality,
+                confidence,
+                item['img_name'],
+                caption
+            )
+
+
+            result = {
+                'qid': item['qid'],
+                'img_name': item['img_name'],
+                'true_modality': item['modality'],
+                'predicted_modality': predicted_modality,
+                'confidence': confidence,
+                'question': item['question'],
+                'enhanced_prompt': enhanced_prompt,
+                'generated_caption': caption,
+                'original_answer': item['answer']
+            }
+            results.append(result)
+
+            if (idx + 1) % 100 == 0:
+                print(f"\nProcessed {idx + 1}/{len(english_data)} samples")
+                print("\nIntermediate Evaluation Results:")
+                evaluator.print_evaluation_results()
+
+        except Exception as e:
+            print(f"\nError processing image {item['img_name']}: {str(e)}")
+            print("Full traceback:")
+            print(traceback.format_exc())
+            continue
+
+
+    print("\n=== Final Evaluation Results ===")
+    evaluator.print_evaluation_results()
+
+
+    try:
+        output_data = {
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'results': results,
+            'evaluation_stats': evaluator.stats,
+            'run_summary': {
+                'total_samples': len(english_data),
+                'processed_samples': len(results),
+                'success_rate': len(results) / len(english_data)
+            }
+        }
+
+        with open(output_file, 'w') as f:
+            json.dump(output_data, f, indent=2)
+        print(f"\nResults saved to: {output_file}")
+
+    except Exception as e:
+        print(f"Error saving results: {str(e)}")
+        print(traceback.format_exc())
+
+    return output_file, evaluator
+
+print("Loading models following official documentation...")
+
+
+model_name = "Salesforce/xgen-mm-phi3-mini-instruct-r-v1"
+model = AutoModelForVision2Seq.from_pretrained(
+    model_name,
+    trust_remote_code=True
+)
+tokenizer = AutoTokenizer.from_pretrained(
+    model_name,
+    trust_remote_code=True,
+    use_fast=False,
+    legacy=False
+)
+image_processor = AutoImageProcessor.from_pretrained(
+    model_name,
+    trust_remote_code=True
+)
+tokenizer = model.update_special_tokens(tokenizer)
+
+
+model = model.to(device)
+
+
+question_model_name = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"
+question_tokenizer = AutoTokenizer.from_pretrained(question_model_name)
+question_model = AutoModel.from_pretrained(question_model_name).to(device)
+
+
+question_analyzer = EnhancedQuestionAnalyzer(question_model, question_tokenizer)
+
+
+modality_classifier = ModalityClassifier(num_classes=3).to(device)
+checkpoint = torch.load('/content/drive/MyDrive/PhD/Research1/modelparasave/slake_modality_model_improved.pth',
+                       map_location=device)
+modality_classifier.load_state_dict(checkpoint['model_state_dict'])
+modality_classifier.eval()
+
+if __name__ == "__main__":
+    print("Starting enhanced caption generation for training set...")
+    output_file, evaluator = generate_train_set_captions()
+
+
+
+
+
+
+
+
+
+
+
