@@ -123,13 +123,13 @@ Each notebook includes its own data loader and handling logic.
 If you find DualPrompt-MedCap useful in your research, please consider citing our paper:
 
 📌 Plain Text Citation
-Yining Zhao, Ali Braytee, and Mukesh Prasad.
+Yining Zhao, Mukesh Prasad and Ali Braytee, .
 DualPrompt-MedCap: A Dual-Prompt Enhanced Approach for Medical Image Captioning.
 arXiv preprint arXiv:2504.09598, 2025. https://doi.org/10.48550/arXiv.2504.09598
 ```bibtex
 @article{zhao2025dualprompt,
   title={DualPrompt-MedCap: A Dual-Prompt Enhanced Approach for Medical Image Captioning},
-  author={Zhao, Yining and Braytee, Ali and Prasad, Mukesh},
+  author={Zhao, Yining and Prasad, Mukesh and Braytee, Ali },
   journal={arXiv preprint arXiv:2504.09598},
   year={2025}
 }
