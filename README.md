@@ -128,12 +128,10 @@ DualPrompt-MedCap: A Dual-Prompt Enhanced Approach for Medical Image Captioning.
 arXiv preprint arXiv:2504.09598, 2025. https://doi.org/10.48550/arXiv.2504.09598
 ```bibtex
 @article{zhao2025dualprompt,
-  title   = {DualPrompt-MedCap: A Dual-Prompt Enhanced Approach for Medical Image Captioning},
-  author  = {Zhao, Yining and Braytee, Ali and Prasad, Mukesh},
-  journal = {arXiv preprint arXiv:2504.09598},
-  year    = {2025},
-  url     = {https://arxiv.org/abs/2504.09598},
-  doi     = {10.48550/arXiv.2504.09598}
+  title={DualPrompt-MedCap: A Dual-Prompt Enhanced Approach for Medical Image Captioning},
+  author={Zhao, Yining and Braytee, Ali and Prasad, Mukesh},
+  journal={arXiv preprint arXiv:2504.09598},
+  year={2025}
 }
 ```
 
